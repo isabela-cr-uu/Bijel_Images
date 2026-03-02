@@ -16,7 +16,7 @@
 '''
 
 
-__version__ = '0.0.5'
+__version__ = '0.0.6'
 
 from BijelAnalysisUU.TIF_Viewer import ImageViewer
 from BijelAnalysisUU.surface.bijels_area_gui import BijelsAreaApp

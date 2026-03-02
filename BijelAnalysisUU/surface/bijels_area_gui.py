@@ -6,12 +6,21 @@ import numpy as np
 import cv2
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from BijelAnalysisUU.surface.bijels_area_estimation import (
-    ProcessingParams,
-    load_image,
-    process_image,
-    save_image,
-)
+# When editing locally we also want to use to local bijels_area_estimation
+if __name__ == "__main__":
+        from bijels_area_estimation import (
+            ProcessingParams,
+            load_image,
+            process_image,
+            save_image,
+        )
+else:
+    from BijelAnalysisUU.surface.bijels_area_estimation import (
+        ProcessingParams,
+        load_image,
+        process_image,
+        save_image,
+    )
 
 
 def cv_bgr_to_qimage(bgr: np.ndarray) -> QtGui.QImage:
@@ -153,10 +162,11 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         self._setup_panel_smooth_bottom()
         info_row.addWidget(self.panel_smooth.bottom_widget, stretch=1, alignment=QtCore.Qt.AlignTop)
 
-        self._setup_panel_quant_bottom()
+        self._setup_panel_final_bottom()
+        
+        self._setup_panel_binar_bottom()
         info_row.addWidget(self.panel_quant.bottom_widget, stretch=1, alignment=QtCore.Qt.AlignTop)
 
-        self._setup_panel_final_bottom()
         info_row.addWidget(self.panel_final.bottom_widget, stretch=1, alignment=QtCore.Qt.AlignTop)
 
         vroot.addLayout(info_row, stretch=2)
@@ -176,7 +186,14 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
 
     def _setup_panel_input_bottom(self):
         self.input_info_label = QtWidgets.QLabel("No image loaded")
+        self.gray_combo = QtWidgets.QComboBox()
+        for color in ["red", "green", "blue", "sum"]:
+            self.gray_combo.addItem(color, color)
+        self.gray_combo.setCurrentIndex(3)
+        self.gray_combo.currentIndexChanged.connect(self.on_params_changed)
+        
         self.panel_input.bottom_layout.addWidget(self.input_info_label)
+        self.panel_input.bottom_layout.addWidget(self.gray_combo)
 
     def _setup_panel_eq_bottom(self):
         self.eq_checkbox = QtWidgets.QCheckBox("Use Histogram Equalization")
@@ -186,10 +203,10 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
 
     def _setup_panel_smooth_bottom(self):
         self.kernel_combo = QtWidgets.QComboBox()
-        for k in [2, 3, 4, 5, 6, 7]:
+        for k in [3, 5, 7, 9]:
             self.kernel_combo.addItem(f"{k}x{k}", (k, k))
-        # Default to 6x6 (index of value 6 in the list is 4)
-        self.kernel_combo.setCurrentIndex(4)
+        # Default to 5x5 (index of value 5 in the list is 1)
+        self.kernel_combo.setCurrentIndex(1)
         self.kernel_combo.currentIndexChanged.connect(self.on_params_changed)
 
         # Sigma X controls: slider + value box (two-way binding)
@@ -229,25 +246,169 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         form.addRow(self.gaussian_checkbox)
         self.panel_smooth.bottom_layout.addLayout(form)
 
-    def _setup_panel_quant_bottom(self):
+
+    def _setup_panel_binar_bottom(self):
+        # Dropdown for selecting thresholding algorithm
+        self.binar_combo = QtWidgets.QComboBox()
+        self.panel_quant.bottom_layout.addWidget(self.binar_combo)
+        
+        # Each algorithm needs different input
+        self.algorithm_list = []
+        self._setup_panel_binar_bottom_manual()
+        self._setup_panel_binar_bottom_otsu()
+        self._setup_panel_binar_bottom_local()
+        
+        # Show the appropriate input possibilities, hide the others
+        self.binar_combo.setCurrentIndex(0)
+        self._update_binar_bottom_panel()
+        
+        # Connect dropdown as late as possible because it threw bugs if connected earlier
+        self.binar_combo.currentIndexChanged.connect(self.on_params_changed)
+        
+
+        
+    def _setup_panel_binar_bottom_manual(self):
+        # Add algorithm to dropdown
+        self.binar_combo.addItem("manual", "manual")
+        
+        self.manual_text = QtWidgets.QLabel("Quantization Threshold")
+        
+        # Quant threshold value box and slider (two-way binding)
         self.quant_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.quant_slider.setRange(0, 255)
-        self.quant_slider.setValue(self.params.quant_threshold)
+        self.quant_slider.setValue(128)
+        self.params.threshold_info["quant_threshold"] = 128
         self.quant_slider.valueChanged.connect(self.on_params_changed)
-        # Quant threshold value box (two-way binding)
+
         self.quant_value = QtWidgets.QLineEdit(str(self.quant_slider.value()))
         self.quant_value.setMaximumWidth(60)
         self.quant_value.setValidator(QtGui.QIntValidator(0, 255))
         self.quant_value.editingFinished.connect(self._on_quant_text_changed)
+        
         row = QtWidgets.QHBoxLayout()
         row.addWidget(self.quant_slider)
         row.addWidget(self.quant_value)
-        self.panel_quant.bottom_layout.addWidget(QtWidgets.QLabel("Quantization Threshold"))
-        self.panel_quant.bottom_layout.addWidget(self._wrap_layout_widget(row))
+        self.manual_input = self._wrap_layout_widget(row)
+        
+        # Setup panel as widget and register for easy hiding/showing
+        self.panel_binar_manual = QtWidgets.QFrame()
+        layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(self.manual_text)
+        layout.addWidget(self.manual_input)
+        self.panel_binar_manual.setLayout(layout)
+        
+        self.panel_quant.bottom_layout.addWidget(self.panel_binar_manual)
+        self.algorithm_list.append(["manual", self.panel_binar_manual])
+
+
+    def _setup_panel_binar_bottom_otsu(self):
+        # Add algorithm to dropdown
+        self.binar_combo.addItem("Otsu", "Otsu")
+        
+        self.otsu_label = QtWidgets.QLabel("N/A")
+        self.otsu_text = QtWidgets.QLabel("Otsu calculated Threshold")
+        
+        # Setup panel as widget and register for easy hiding/showing
+        self.panel_binar_otsu = QtWidgets.QFrame()
+        layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(self.otsu_text)
+        layout.addWidget(self.otsu_label)
+        self.panel_binar_otsu.setLayout(layout)
+        
+        self.panel_quant.bottom_layout.addWidget(self.panel_binar_otsu)
+        self.algorithm_list.append(["Otsu", self.panel_binar_otsu])
+        
+        
+        
+    def _setup_panel_binar_bottom_local(self):
+        # Add algorithm to dropdown
+        self.binar_combo.addItem("local", "local")
+        
+        # Block size controls
+        try:
+            local_block_start = self.params.threshold_info["local_block"]
+        except (KeyError):
+            local_block_start = 3
+            self.params.threshold_info["local_block"] = local_block_start
+        self.local_block_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.local_block_slider.setRange(1, 250)  # 3 to 501 in steps of 2
+
+        self.local_block_slider.setValue(int((local_block_start-1) / 2))
+        self.local_block_slider.valueChanged.connect(self.on_params_changed)
+        
+        self.local_block_value = QtWidgets.QLineEdit(f"{local_block_start:3d}")
+        self.local_block_value.setMaximumWidth(60)
+        self.local_block_value.setValidator(QtGui.QDoubleValidator(3, 501, 0,  
+                                            notation=QtGui.QDoubleValidator.StandardNotation))
+        self.local_block_value.editingFinished.connect(self._on_local_block_text_changed)
+        
+        lb_talker = QtWidgets.QHBoxLayout()
+        lb_talker.addWidget(self.local_block_slider)
+        lb_talker.addWidget(self.local_block_value)
+        lb_row = QtWidgets.QHBoxLayout()
+        lb_row.addWidget(QtWidgets.QLabel("Block size"))
+        lb_row.addWidget(self._wrap_layout_widget(lb_talker))
+        
+        # offset controls
+        try:
+            local_offset_start = self.params.threshold_info["local_offset"]
+        except (KeyError):
+            local_offset_start = 0
+            self.params.threshold_info["local_offset"] = local_offset_start
+        self.local_offset_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.local_offset_slider.setRange(-10, 10)  # -10 to 10
+
+        self.local_offset_slider.setValue(int(local_offset_start))
+        self.local_offset_slider.valueChanged.connect(self.on_params_changed)
+        
+        self.local_offset_value = QtWidgets.QLineEdit(f"{local_offset_start:3d}")
+        self.local_offset_value.setMaximumWidth(60)
+        self.local_offset_value.setValidator(QtGui.QDoubleValidator(-10, 10, 0,  
+                                            notation=QtGui.QDoubleValidator.StandardNotation))
+        self.local_offset_value.editingFinished.connect(self._on_local_offset_text_changed)
+        
+                
+        
+        lo_talker = QtWidgets.QHBoxLayout()
+        lo_talker.addWidget(self.local_offset_slider)
+        lo_talker.addWidget(self.local_offset_value)
+        lo_row = QtWidgets.QHBoxLayout()
+        lo_row.addWidget(QtWidgets.QLabel("Offset"))
+        lo_row.addWidget(self._wrap_layout_widget(lo_talker))
+        
+        self.local_text = QtWidgets.QLabel("Local calculated Threshold, Otsu algorithm")
+
+        # Setup panel as widget and register for easy hiding/showing
+        self.panel_binar_local = QtWidgets.QFrame()
+        layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(self.local_text)
+        layout.addLayout(lb_row)
+        layout.addLayout(lo_row)
+        self.panel_binar_local.setLayout(layout)
+        self.panel_quant.bottom_layout.addWidget(self.panel_binar_local)
+        self.algorithm_list.append(["local", self.panel_binar_local])
+
+
+        
+    
+    def _update_binar_bottom_panel(self):
+        # Automatically hide/show the correct info panel
+        for algo, panel in self.algorithm_list:
+            if algo == self.binar_combo.currentData():
+                panel.show()
+            else:
+                panel.hide()
+                
+                
+        
+
 
     def _setup_panel_final_bottom(self):
-        self.update_button = QtWidgets.QPushButton("Update Final")
-        self.update_button.clicked.connect(self.on_params_changed)
+        self.update_button = QtWidgets.QPushButton("Force Update Final")
+        self.update_button.clicked.connect(self._force_update)
+        self.update_checkbox = QtWidgets.QCheckBox("Automatic Updating")
+        self.update_checkbox.setChecked(self.params.auto_update)
+        self.update_checkbox.stateChanged.connect(self.on_params_changed)
         self.resolution_input = QtWidgets.QLineEdit("0.1202")
         self.resolution_input.setValidator(QtGui.QDoubleValidator(0.0, 1e9, 6))
         self.resolution_input.editingFinished.connect(self.on_params_changed)
@@ -265,7 +426,7 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         self._update_overlay_swatch()
         self.stats_label = QtWidgets.QLabel("Stats: N/A")
         form = QtWidgets.QFormLayout()
-        form.addRow(self.update_button)
+        form.addRow(self.update_checkbox, self.update_button)
         form.addRow("Pixel Resolution (µm)", self.resolution_input)
         overlay_row = QtWidgets.QHBoxLayout()
         overlay_row.addWidget(self.overlay_zero_radio)
@@ -310,8 +471,10 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Save Failed", "Could not save image.")
 
     def on_params_changed(self):
+        self.params.make_gray = self.gray_combo.currentData()
         self.params.use_hist_eq = self.eq_checkbox.isChecked()
-        self.params.use_gaussian = self.gaussian_checkbox.isChecked()
+        self.params.auto_update = self.update_checkbox.isChecked()
+        self.params.use_gussian = self.gaussian_checkbox.isChecked()
         self.params.gaussian_kernel = self.kernel_combo.currentData()
         self.params.sigma_x = self.sigma_x_slider.value() / 10.0
         self.params.sigma_y = self.sigma_y_slider.value() / 10.0
@@ -321,15 +484,31 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         # Reflect slider changes to text boxes
         self.sigma_x_value.setText(f"{self.params.sigma_x:.1f}")
         self.sigma_y_value.setText(f"{self.params.sigma_y:.1f}")
-        self.params.quant_threshold = self.quant_slider.value()
-        self.quant_value.setText(str(self.params.quant_threshold))
+        
+        
         # Overlay mode: True for zeros, False for 255
         self.params.overlay_use_zero = self.overlay_zero_radio.isChecked()
+        
+        self.params.threshold_algorithm = self.binar_combo.currentData()
+        self.params.threshold_info["local_block"] = int(self.local_block_slider.value()*2+1)
+        self.local_block_value.setText(str(self.params.threshold_info["local_block"]))
+        self.params.threshold_info["local_offset"] = int(self.local_offset_slider.value())
+        self.local_offset_value.setText(str(self.params.threshold_info["local_offset"]))
+        self.params.threshold_info["quant_threshold"] = self.quant_slider.value()
+        self.quant_value.setText(str(self.params.threshold_info["quant_threshold"]))
+
         
         try:
             self.resolution_nm = float(self.resolution_input.text())
         except Exception:
             self.resolution_nm = 1.0
+            
+        #run pipeline only if auto_update is turned on 
+        if self.params.auto_update:
+            self._run_pipeline()
+        self._update_ui()
+        
+    def _force_update(self):
         self._run_pipeline()
         self._update_ui()
 
@@ -375,6 +554,26 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         val = max(0.0, min(5.0, val))
         self.sigma_y_slider.setValue(int(round(val * 10)))
         self.on_params_changed()
+        
+    def _on_local_block_text_changed(self):
+        try:
+            val = int(self.local_block_value.text())
+        except Exception:
+            return
+        val = max(3, min(501, val))
+        if val%2==1:
+            val+=1
+        self.local_block_slider.setValue(int((val-1)/2))
+        self.on_params_changed()
+        
+    def _on_local_offset_text_changed(self):
+        try:
+            val = int(self.local_offset_value.text())
+        except Exception:
+            return
+        val = max(-10, min(10, val))
+        self.local_offset_slider.setValue(int(val))
+        self.on_params_changed()
 
     def _on_quant_text_changed(self):
         try:
@@ -410,8 +609,12 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
             self.panel_eq.hist_label.setPixmap(eq_hist_pix)
 
             self.panel_smooth.set_top_pixmap(make_pixmap_from_cv(smooth_gray))
-            self.panel_quant.set_top_pixmap(make_pixmap_from_cv(quant_mask))
-
+            maskpicture = np.asarray(255*quant_mask, dtype=np.ubyte)
+            self.panel_quant.set_top_pixmap(make_pixmap_from_cv(maskpicture))
+            if self.params.threshold_algorithm == "Otsu":
+                self.otsu_label.setText(str(stats["threshold_used"]))
+            self._update_binar_bottom_panel()
+                
             self.panel_final.set_top_pixmap(make_pixmap_from_cv(final_overlay))
             total_pixels = stats["total_pixels"]
             count_0 = stats.get("count_0", 0)
