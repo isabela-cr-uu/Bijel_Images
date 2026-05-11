@@ -441,7 +441,7 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
 
     def on_load_image(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Load Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
+            self, "Load Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.lif *.liff)"
         )
         if not path:
             return
@@ -459,7 +459,7 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "No Result", "Please load an image and update.")
             return
         save_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save Final Image", "final_overlay.png", "PNG (*.png);;JPEG (*.jpg *.jpeg)"
+            self, "Save Final Image", "final_overlay.png", "PNG (*.png);;JPEG (*.jpg *.jpeg);;TIFF (*.tif *.tiff)"
         )
         if not save_path:
             return
