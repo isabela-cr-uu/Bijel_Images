@@ -6,6 +6,9 @@ import numpy as np
 import cv2
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+import liffile
+from liffile import LifFile
+
 # When editing locally we also want to use to local bijels_area_estimation
 if __name__ == "__main__":
         from bijels_area_estimation import (
@@ -445,10 +448,40 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         )
         if not path:
             return
-        img = load_image(path)
-        if img is None:
-            QtWidgets.QMessageBox.warning(self, "Load Failed", "Could not load image.")
-            return
+        ext = os.path.splitext(path)[1].lower()
+        if ext in [".lif", ".liff"]:
+            try:
+                with LifFile(path) as lif:
+                    if len(lif.images) == 0:
+                        QtWidgets.QMessageBox.warning(self, "Load Failed", "No series found in LIF file.")
+                        return
+                    image_names = []
+                    for i, image in enumerate(lif.images):
+                        try:
+                            shape_str = "x".join(map(str, image.shape))
+                        except Exception:
+                            shape_str = "unknown shape"
+                        image_names.append(f"Series {i} ({shape_str})")
+                    item, ok = QtWidgets.QInputDialog.getItem(self, "Select Image", "Choose image series", image_names, 0, False)
+                    if not ok:
+                        return
+                    selected_index = image_names.index(item)
+                    image = lif.images[selected_index]
+                    arr = image.asarray()
+                    while arr.ndim > 2:
+                        arr = arr[0]    
+                    arr = cv2.normalize(arr, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                    if arr.ndim == 2:
+                        arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+                    img = arr
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Load Failed", f"Could not load LIF file: {str(e)}")
+                return
+        else:
+            img = load_image(path)
+            if img is None:
+                QtWidgets.QMessageBox.warning(self, "Load Failed", "Could not load image.")
+                return
         self.image_path = path
         self.input_bgr = img
         self._run_pipeline()
@@ -474,7 +507,7 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         self.params.make_gray = self.gray_combo.currentData()
         self.params.use_hist_eq = self.eq_checkbox.isChecked()
         self.params.auto_update = self.update_checkbox.isChecked()
-        self.params.use_gussian = self.gaussian_checkbox.isChecked()
+        self.params.use_gaussian = self.gaussian_checkbox.isChecked()
         self.params.gaussian_kernel = self.kernel_combo.currentData()
         self.params.sigma_x = self.sigma_x_slider.value() / 10.0
         self.params.sigma_y = self.sigma_y_slider.value() / 10.0
