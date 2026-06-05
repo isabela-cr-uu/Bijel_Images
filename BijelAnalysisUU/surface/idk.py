@@ -190,7 +190,7 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
     def _setup_panel_input_bottom(self):
         self.input_info_label = QtWidgets.QLabel("No image loaded")
         self.gray_combo = QtWidgets.QComboBox()
-        for color in ["red", "green", "blue", "gray"]:
+        for color in ["red", "green", "blue", "sum"]:
             self.gray_combo.addItem(color, color)
         self.gray_combo.setCurrentIndex(3)
         self.gray_combo.currentIndexChanged.connect(self.on_params_changed)
@@ -368,7 +368,9 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         self.local_offset_value.setMaximumWidth(60)
         self.local_offset_value.setValidator(QtGui.QDoubleValidator(-10, 10, 0,  
                                             notation=QtGui.QDoubleValidator.StandardNotation))
-        self.local_offset_value.editingFinished.connect(self._on_local_offset_text_changed)                
+        self.local_offset_value.editingFinished.connect(self._on_local_offset_text_changed)
+        
+                
         
         lo_talker = QtWidgets.QHBoxLayout()
         lo_talker.addWidget(self.local_offset_slider)
@@ -389,6 +391,9 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         self.panel_quant.bottom_layout.addWidget(self.panel_binar_local)
         self.algorithm_list.append(["local", self.panel_binar_local])
 
+
+        
+    
     def _update_binar_bottom_panel(self):
         # Automatically hide/show the correct info panel
         for algo, panel in self.algorithm_list:
@@ -396,7 +401,11 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
                 panel.show()
             else:
                 panel.hide()
-            
+                
+                
+        
+
+
     def _setup_panel_final_bottom(self):
         self.update_button = QtWidgets.QPushButton("Force Update Final")
         self.update_button.clicked.connect(self._force_update)
@@ -435,7 +444,8 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
 
     def on_load_image(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Load Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.lif *.liff)")
+            self, "Load Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.lif *.liff)"
+        )
         if not path:
             return
         ext = os.path.splitext(path)[1].lower()
@@ -458,31 +468,12 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
                     selected_index = image_names.index(item)
                     image = lif.images[selected_index]
                     arr = image.asarray()
-                    arr = np.squeeze(arr)  
-                    if arr.dtype != np.uint8:
-                        arr = cv2.normalize(arr, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                    while arr.ndim > 2:
+                        arr = arr[0]    
+                    arr = cv2.normalize(arr, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
                     if arr.ndim == 2:
-                        img = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
-                    elif arr.ndim == 3 and arr.shape[-1] in [3, 4]:
-                        base = arr[:, :, :3].copy()
-                        mag = np.maximum(base[:, :, 0], base[:, :, 2])
-                        img = cv2.merge([mag, np.zeros_like(mag, dtype=np.uint8), mag])
-                    elif arr.ndim == 3 and arr.shape[0] in [2, 3, 4]:  
-                        channels = []
-                        for i in range(min(3, arr.shape[0])):
-                            channel = arr[i]
-                            channel = cv2.normalize(channel, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-                            channels.append(channel)
-                        while len(channels) < 3:
-                            channels.append(np.zeros_like(channels[0], dtype=np.uint8))
-                        blue = channels[0]
-                        red = channels[2] if len(channels) > 2 else np.zeros_like(blue, dtype=np.uint8)
-                        mag = np.maximum(red, blue)
-                        img = cv2.merge([mag, np.zeros_like(mag, dtype=np.uint8), mag])
-                    else:
-                        while arr.ndim > 2:
-                            arr = arr[0]
-                        img = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+                        arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+                    img = arr
             except Exception as e:
                 QtWidgets.QMessageBox.warning(self, "Load Failed", f"Could not load LIF file: {str(e)}")
                 return
