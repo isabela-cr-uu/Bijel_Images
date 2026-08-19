@@ -9,7 +9,6 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 import liffile
 from liffile import LifFile
 
-# When editing locally we also want to use to local bijels_area_estimation
 if __name__ == "__main__":
         from bijels_area_estimation import (
             ProcessingParams,
@@ -67,7 +66,6 @@ def plot_hist_on_pixmap(hist: np.ndarray, size: Tuple[int, int] = (400, 150)) ->
     return pix
 
 def label_hist_pixmap(label: QtWidgets.QLabel, hist: np.ndarray, default_height: int = 150) -> QtGui.QPixmap:
-    # Create histogram pixmap with width matching the display label
     target_w = max(label.width(), 200)
     return plot_hist_on_pixmap(hist, (target_w, default_height))
 
@@ -81,7 +79,6 @@ class ImagePanel(QtWidgets.QWidget):
         self.top_label = QtWidgets.QLabel()
         self.top_label.setAlignment(QtCore.Qt.AlignCenter)
         self.hist_label = QtWidgets.QLabel()
-        # Keep horizontally centered under the image but top-aligned vertically
         self.hist_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignHCenter)
         self.bottom_widget = QtWidgets.QWidget()
         self.bottom_layout = QtWidgets.QVBoxLayout(self.bottom_widget)
@@ -113,6 +110,87 @@ class ImagePanel(QtWidgets.QWidget):
         super().resizeEvent(event)
         self._apply_scaled_pixmap()
 
+class ROISelectionDialog(QtWidgets.QDialog):
+    def __init__(self, image_bgr: np.ndarray, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Region of Interest (ROI)")
+        self.image_bgr = image_bgr.copy()
+        self.display_bgr = image_bgr.copy()
+        self.points = []
+        layout = QtWidgets.QVBoxLayout(self)
+        self.image_label = QtWidgets.QLabel()
+        self.image_label.setCursor(QtCore.Qt.CrossCursor)
+        self.image_label.mousePressEvent = self._on_mouse_press
+        layout.addWidget(self.image_label, alignment=QtCore.Qt.AlignCenter)
+        btn_layout = QtWidgets.QHBoxLayout()
+        self.btn_reset = QtWidgets.QPushButton("Reset")
+        self.btn_reset.clicked.connect(self._reset_points)
+        self.btn_full = QtWidgets.QPushButton("Use Full Image")
+        self.btn_full.clicked.connect(self._use_full_image)
+        self.btn_apply = QtWidgets.QPushButton("Apply ROI")
+        self.btn_apply.setStyleSheet("font-weight: bold;")
+        self.btn_apply.clicked.connect(self.accept)
+        btn_layout.addWidget(self.btn_reset)
+        btn_layout.addWidget(self.btn_full)
+        btn_layout.addWidget(self.btn_apply)
+        layout.addLayout(btn_layout)
+        self._update_display()
+
+    def _update_display(self):
+        h, w = self.image_bgr.shape[:2]
+        max_w, max_h = 800, 600
+        scale = min(max_w / w, max_h / h, 1.0)
+        self.disp_w = max(1, int(w * scale))
+        self.disp_h = max(1, int(h * scale))
+        qimg = cv_bgr_to_qimage(self.display_bgr)
+        pixmap = QtGui.QPixmap.fromImage(qimg).scaled(
+            self.disp_w, self.disp_h,
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation)
+        self.image_label.setPixmap(pixmap)
+        self.image_label.setFixedSize(pixmap.size())
+
+    def _on_mouse_press(self, event: QtGui.QMouseEvent):
+        if event.button() == QtCore.Qt.LeftButton:
+            pos = event.pos()
+            orig_h, orig_w = self.image_bgr.shape[:2]
+            real_x = int(pos.x() * (orig_w / self.disp_w))
+            real_y = int(pos.y() * (orig_h / self.disp_h))
+            real_x = max(0, min(orig_w - 1, real_x))
+            real_y = max(0, min(orig_h - 1, real_y))
+            self.points.append((real_x, real_y))
+            self._redraw_polygon()
+
+    def _redraw_polygon(self):
+        self.display_bgr = self.image_bgr.copy()
+        if len(self.points) > 0:
+            pts = np.array(self.points, np.int32).reshape((-1, 1, 2))
+            cv2.polylines(self.display_bgr, [pts], isClosed=(len(self.points) > 2), color=(0, 255, 0), thickness=2)
+            for pt in self.points:
+                cv2.circle(self.display_bgr, pt, 5, (0, 0, 255), -1)
+                
+        self._update_display()
+
+    def _reset_points(self):
+        self.points = []
+        self.display_bgr = self.image_bgr.copy()
+        self._update_display()
+
+    def _use_full_image(self):
+        self.points = []
+        self.accept()
+
+    def get_mask(self) -> np.ndarray:
+        h, w = self.image_bgr.shape[:2]
+        mask = np.zeros((h, w), dtype=np.uint8)
+        
+        if len(self.points) >= 3:
+            pts = np.array(self.points, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.fillPoly(mask, [pts], 255)
+        else:
+            mask.fill(255)  # If fewer than 3 points, return full image mask
+            
+        return mask
 
 class BijelsAreaApp(QtWidgets.QMainWindow):
     def __init__(self):
@@ -124,9 +202,7 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         self.input_bgr: Optional[np.ndarray] = None
         self.params = ProcessingParams()
         self.results = None
-        # Pixel resolution in micrometers (µm)
         self.resolution_nm: float = 0.1202
-        # Ensure default overlay color is red (BGR)
         self.params.overlay_color = (0, 0, 255)
 
         central = QtWidgets.QWidget()
@@ -134,14 +210,12 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         vroot = QtWidgets.QVBoxLayout(central)
         vroot.setSpacing(8)
 
-        # Create panels
         self.panel_input = ImagePanel("1. Input Image")
         self.panel_eq = ImagePanel("2. Equalized Image")
         self.panel_smooth = ImagePanel("3. Smoothen Image")
         self.panel_quant = ImagePanel("4. Quantized Image")
         self.panel_final = ImagePanel("5. Final Image")
 
-        # Top row: panels (image + histogram) side-by-side
         images_row = QtWidgets.QHBoxLayout()
         images_row.setSpacing(10)
         images_row.addWidget(self.panel_input, stretch=1)
@@ -151,11 +225,9 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         images_row.addWidget(self.panel_final, stretch=1)
         vroot.addLayout(images_row, stretch=3)
 
-        # Bottom row: additional info/controls aligned below images
         info_row = QtWidgets.QHBoxLayout()
         info_row.setSpacing(10)
 
-        # Build bottom widgets for each panel
         self._setup_panel_input_bottom()
         info_row.addWidget(self.panel_input.bottom_widget, stretch=1, alignment=QtCore.Qt.AlignTop)
 
@@ -189,14 +261,7 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
 
     def _setup_panel_input_bottom(self):
         self.input_info_label = QtWidgets.QLabel("No image loaded")
-        self.gray_combo = QtWidgets.QComboBox()
-        for color in ["red", "green", "blue", "gray"]:
-            self.gray_combo.addItem(color, color)
-        self.gray_combo.setCurrentIndex(3)
-        self.gray_combo.currentIndexChanged.connect(self.on_params_changed)
-        
         self.panel_input.bottom_layout.addWidget(self.input_info_label)
-        self.panel_input.bottom_layout.addWidget(self.gray_combo)
 
     def _setup_panel_eq_bottom(self):
         self.eq_checkbox = QtWidgets.QCheckBox("Use Histogram Equalization")
@@ -208,11 +273,9 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         self.kernel_combo = QtWidgets.QComboBox()
         for k in [3, 5, 7, 9]:
             self.kernel_combo.addItem(f"{k}x{k}", (k, k))
-        # Default to 5x5 (index of value 5 in the list is 1)
         self.kernel_combo.setCurrentIndex(1)
         self.kernel_combo.currentIndexChanged.connect(self.on_params_changed)
 
-        # Sigma X controls: slider + value box (two-way binding)
         self.sigma_x_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.sigma_x_slider.setRange(0, 50)  # 0.0 to 5.0 in steps of 0.1
         self.sigma_x_slider.setValue(max(0, min(50, int(self.params.sigma_x * 10))))
@@ -222,7 +285,6 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         self.sigma_x_value.setValidator(QtGui.QDoubleValidator(0.0, 5.0, 1))
         self.sigma_x_value.editingFinished.connect(self._on_sigma_x_text_changed)
 
-        # Sigma Y controls: slider + value box (two-way binding)
         self.sigma_y_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.sigma_y_slider.setRange(0, 50)  # 0.0 to 5.0 in steps of 0.1
         self.sigma_y_slider.setValue(max(0, min(50, int(self.params.sigma_y * 10))))
@@ -249,34 +311,27 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         form.addRow(self.gaussian_checkbox)
         self.panel_smooth.bottom_layout.addLayout(form)
 
-
     def _setup_panel_binar_bottom(self):
-        # Dropdown for selecting thresholding algorithm
         self.binar_combo = QtWidgets.QComboBox()
         self.panel_quant.bottom_layout.addWidget(self.binar_combo)
         
-        # Each algorithm needs different input
         self.algorithm_list = []
         self._setup_panel_binar_bottom_manual()
         self._setup_panel_binar_bottom_otsu()
         self._setup_panel_binar_bottom_local()
         
-        # Show the appropriate input possibilities, hide the others
         self.binar_combo.setCurrentIndex(0)
         self._update_binar_bottom_panel()
         
-        # Connect dropdown as late as possible because it threw bugs if connected earlier
         self.binar_combo.currentIndexChanged.connect(self.on_params_changed)
         
 
         
     def _setup_panel_binar_bottom_manual(self):
-        # Add algorithm to dropdown
         self.binar_combo.addItem("manual", "manual")
         
         self.manual_text = QtWidgets.QLabel("Quantization Threshold")
         
-        # Quant threshold value box and slider (two-way binding)
         self.quant_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.quant_slider.setRange(0, 255)
         self.quant_slider.setValue(128)
@@ -293,7 +348,6 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         row.addWidget(self.quant_value)
         self.manual_input = self._wrap_layout_widget(row)
         
-        # Setup panel as widget and register for easy hiding/showing
         self.panel_binar_manual = QtWidgets.QFrame()
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(self.manual_text)
@@ -305,13 +359,11 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
 
 
     def _setup_panel_binar_bottom_otsu(self):
-        # Add algorithm to dropdown
         self.binar_combo.addItem("Otsu", "Otsu")
         
         self.otsu_label = QtWidgets.QLabel("N/A")
         self.otsu_text = QtWidgets.QLabel("Otsu calculated Threshold")
         
-        # Setup panel as widget and register for easy hiding/showing
         self.panel_binar_otsu = QtWidgets.QFrame()
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(self.otsu_text)
@@ -324,10 +376,8 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         
         
     def _setup_panel_binar_bottom_local(self):
-        # Add algorithm to dropdown
         self.binar_combo.addItem("local", "local")
         
-        # Block size controls
         try:
             local_block_start = self.params.threshold_info["local_block"]
         except (KeyError):
@@ -352,7 +402,6 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         lb_row.addWidget(QtWidgets.QLabel("Block size"))
         lb_row.addWidget(self._wrap_layout_widget(lb_talker))
         
-        # offset controls
         try:
             local_offset_start = self.params.threshold_info["local_offset"]
         except (KeyError):
@@ -379,7 +428,6 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         
         self.local_text = QtWidgets.QLabel("Local calculated Threshold, Otsu algorithm")
 
-        # Setup panel as widget and register for easy hiding/showing
         self.panel_binar_local = QtWidgets.QFrame()
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(self.local_text)
@@ -390,7 +438,6 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
         self.algorithm_list.append(["local", self.panel_binar_local])
 
     def _update_binar_bottom_panel(self):
-        # Automatically hide/show the correct info panel
         for algo, panel in self.algorithm_list:
             if algo == self.binar_combo.currentData():
                 panel.show()
@@ -451,7 +498,8 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
                             shape_str = "x".join(map(str, image.shape))
                         except Exception:
                             shape_str = "unknown shape"
-                        image_names.append(f"Series {i} ({shape_str})")
+                        series_name = getattr(image, "name", f"Series {i}")
+                        image_names.append(f"{series_name} ({shape_str})")
                     item, ok = QtWidgets.QInputDialog.getItem(self, "Select Image", "Choose image series", image_names, 0, False)
                     if not ok:
                         return
@@ -491,6 +539,13 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
             if img is None:
                 QtWidgets.QMessageBox.warning(self, "Load Failed", "Could not load image.")
                 return
+        roi_dialog = ROISelectionDialog(img, parent=self)
+        if roi_dialog.exec_() == QtWidgets.QDialog.Accepted:
+            mask = roi_dialog.get_mask()
+            # Mask out region outside polygon (set to black background)
+            img = cv2.bitwise_and(img, img, mask=mask)
+        else:
+            return
         self.image_path = path
         self.input_bgr = img
         self._run_pipeline()
@@ -513,7 +568,7 @@ class BijelsAreaApp(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Save Failed", "Could not save image.")
 
     def on_params_changed(self):
-        self.params.make_gray = self.gray_combo.currentData()
+        self.params.make_gray = self.binar_combo.currentData()
         self.params.use_hist_eq = self.eq_checkbox.isChecked()
         self.params.auto_update = self.update_checkbox.isChecked()
         self.params.use_gaussian = self.gaussian_checkbox.isChecked()
